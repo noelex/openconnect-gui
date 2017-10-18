@@ -32,6 +32,9 @@
 #include <cstdarg>
 #include <cstdio>
 
+#include <winsock2.h>
+#include <gnutls/gnutls.h>
+
 static int last_form_empty;
 
 static void stats_vfn(void* privdata, const struct oc_stats* stats)
@@ -67,6 +70,30 @@ static void progress_vfn(void* privdata, int level, const char* fmt, ...)
     len = strlen(buf);
     if (buf[len - 1] == '\n')
         buf[len - 1] = 0;
+
+    // HACK: Set link MTU based on TCP_MAXSEG to avoid MTU detection with DPD,
+    // which won't work for server if we are behind a broken router which does
+    // not send or sends wrong ICMP Fragmentation Needed message.
+    // Since OpenConnect library doesn't provide any function for us to set base
+    // MTU, we have to hack directly into the openconnect_info structure, which
+    // only supposed to work for v7.08.
+    static char *prefix = "Got HTTP response:";
+    if(level == PRG_DEBUG && strncmp(prefix, buf, strlen(prefix)) == 0)
+    {
+        int mss, base_mtu=1500;
+        int *base_mtu_ptr = (int *)((char *)vpn->vpninfo + 1648);
+        gnutls_session_t sess = (gnutls_session_t)*(int **)((char *)vpn->vpninfo + 920);
+        int ssl_fd = (int)gnutls_transport_get_ptr(sess);
+        int mss_size = sizeof(mss);
+        // This is not supported before Windows 10.
+        int ret = getsockopt(ssl_fd, IPPROTO_TCP, 4 /*TCP_MAXSEG*/,(char *)&mss, &mss_size);
+        if (!ret) {
+              Logger::instance().addMessage(QLatin1String("TCP_MAXSEG is ")+QString::number(mss));
+              base_mtu = mss + 40;
+        }
+        *base_mtu_ptr=base_mtu;
+    }
+
     Logger::instance().addMessage(buf);
 }
 
